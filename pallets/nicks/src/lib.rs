@@ -36,12 +36,30 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use frame_support::traits::{Currency, ReservableCurrency};
+pub mod migrations;
+
+use scale_info::TypeInfo;
+use sp_runtime::{RuntimeDebug};
+use frame_support::{
+	weights::Weight,
+	traits::{Currency, ReservableCurrency, StorageVersion},
+};
 pub use pallet::*;
 use sp_std::prelude::*;
+pub use log::{info};
 
 type BalanceOf<T> =
 	<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
+
+/// The current storage version.
+const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
+/// A nickname with a first and last part.
+#[derive(codec::Encode, codec::Decode, Default, RuntimeDebug, PartialEq, TypeInfo)]
+pub struct Nickname {
+	first: Vec<u8>,
+	last: Option<Vec<u8>>,
+}
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -90,27 +108,43 @@ pub mod pallet {
 		TooShort,
 		/// A name is too long.
 		TooLong,
+		StorageOverflow,
 	}
 
-	/// The lookup table for names.
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_runtime_upgrade() -> Weight {
+			migrations::migrate::<T>()
+		}
+	}
+
+		/// The lookup table for names.
 	#[pallet::storage]
-	pub(super) type NameOf<T: Config> =
-		StorageMap<_, Twox64Concat, T::AccountId, (Vec<u8>, BalanceOf<T>)>;
+	pub(super) type RealnameOf<T: Config> =
+		StorageMap<_, Twox64Concat, T::AccountId, (Nickname,BalanceOf<T>)>;
+
+	#[pallet::storage]
+	pub(super) type CountForNames<T: Config> = StorageValue<_, u32>;
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		#[pallet::weight(50_000_000)]
-		pub fn set_name(origin: OriginFor<T>, name: Vec<u8>) -> DispatchResult {
+		pub fn set_name(origin: OriginFor<T>, first: Vec<u8>, last: Option<Vec<u8>>) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
 
-			ensure!(name.len() >= T::MinLength::get() as usize, Error::<T>::TooShort);
-			ensure!(name.len() <= T::MaxLength::get() as usize, Error::<T>::TooLong);
+			let len = match last {
+				None => first.len(),
+				Some(ref last_name) => first.len() + last_name.len(),
+			};
 
-			let deposit = if let Some((_, deposit)) = <NameOf<T>>::get(&sender) {
+			ensure!(len <= T::MaxLength::get().try_into().unwrap(), Error::<T>::TooLong);
+
+			let deposit = if let Some((_, deposit)) = <RealnameOf<T>>::get(&sender) {
 				Self::deposit_event(Event::<T>::NameChanged(sender.clone()));
 				deposit
 			} else {
@@ -120,7 +154,13 @@ pub mod pallet {
 				deposit
 			};
 
-			<NameOf<T>>::insert(&sender, (name, deposit));
+			<RealnameOf<T>>::insert(&sender, (Nickname { first, last }, deposit));
+			if let Some(old) = <CountForNames<T>>::get() {
+				// Increment the value read from storage; will error in the event of overflow.
+				let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
+				// Update the value in storage with the incremented result.
+				<CountForNames<T>>::put(new);
+			}
 			Ok(())
 		}
 	}
