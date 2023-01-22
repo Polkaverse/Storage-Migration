@@ -1,5 +1,5 @@
 # Storage migration
-A simple substrate code example of storage migration of a simple pallet. You can take the idea of storage migration for a pallet in substrate chain.
+A simple substrate code example for storage migration of a simple pallet. You can take the idea of storage migration for a pallet in substrate chain.
 
 
 ### Build
